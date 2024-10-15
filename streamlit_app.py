@@ -1,151 +1,174 @@
-import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import statsmodels.api as sm
+import plotly.express as px
+import streamlit as st
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+    page_title='Evaluating Returns on Stocks and shares',
+    page_icon=':bar_chart:',  # This is an emoji shortcode for the bar chart emoji
+    
+# Define the path for your BigQuery credentials if needed
+# from google.colab import auth
+# auth.authenticate_user()
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Replace this with your actual BigQuery client setup if running locally
+# from google.cloud import bigquery
+# client = bigquery.Client()
 
+# Load data from BigQuery or any other source
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_data():
+    # Replace this with your actual query
+    # data = client.query('SELECT * FROM `risks-and-returrns-stocks.stocks_shares_csv.10yr_data`').to_dataframe()
+    # For demonstration, simulate the DataFrame
+    dates = pd.date_range(start="2014-10-17", end="2024-10-14", freq='D')
+    data = pd.DataFrame({
+        "DATE": dates,
+        "AAPL": np.random.uniform(low=100, high=150, size=len(dates)),
+        "NFLX": np.random.uniform(low=200, high=300, size=len(dates)),
+        "BA": np.random.uniform(low=150, high=250, size=len(dates)),
+        "T": np.random.uniform(low=25, high=35, size=len(dates)),
+        "MGM": np.random.uniform(low=35, high=45, size=len(dates)),
+        "AMZN": np.random.uniform(low=1500, high=3500, size=len(dates)),
+        "IBM": np.random.uniform(low=100, high=140, size=len(dates)),
+        "GOOG": np.random.uniform(low=1200, high=2800, size=len(dates)),
+        "SP500": np.random.uniform(low=3000, high=4000, size=len(dates))
+    })
+    return data
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+data = load_data()
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Calculate daily returns for each stock and the market (S&P 500)
+stocks = ['AAPL', 'NFLX', 'BA', 'T', 'MGM', 'AMZN', 'IBM', 'GOOG']
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+for stock in stocks:
+    data[f'{stock}_Return'] = data[stock].pct_change()
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+data['SP500_Return'] = data['SP500'].pct_change()
+data = data.dropna()
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# Function to calculate beta using linear regression
+def calculate_beta(stock_returns, market_returns):
+    X = sm.add_constant(market_returns)  # Add a constant term (intercept)
+    model = sm.OLS(stock_returns, X).fit()
+    return model.params.iloc[1]  # Beta is the slope coefficient
 
-    return gdp_df
+# Calculate beta for each stock
+beta_values = {}
+market_returns = data['SP500_Return']
 
-gdp_df = get_gdp_data()
+for stock in stocks:
+    stock_returns = data[f'{stock}_Return']
+    beta_values[stock] = calculate_beta(stock_returns, market_returns)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# Create a DataFrame to store the beta values
+beta_df = pd.DataFrame(list(beta_values.items()), columns=['Stock', 'Beta'])
+beta_df = beta_df.sort_values(by='Beta', ascending=False)
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# Assumptions
+risk_free_rate = 0.0409  # Assume 4.09% as the risk-free rate
+market_avg_return = data['SP500_Return'].mean()
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+# Initialize an empty list to store stock beta, CAPM expected return, and the average stock return
+stock_data = []
 
-# Add some spacing
-''
-''
+# Iterate through each stock to calculate its CAPM and average return
+for stock in stocks:
+    beta = beta_values[stock]
+    capm_expected_return = risk_free_rate + beta * (market_avg_return - risk_free_rate)
+    avg_stock_return = data[f'{stock}_Return'].mean()
+    stock_data.append({
+        'Stock': stock,
+        'Beta': beta,
+        'CAPM_Expected_Return': capm_expected_return,
+        'Avg_Stock_Return': avg_stock_return
+    })
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+# Convert the list of stock data into a DataFrame
+stock_selection_df = pd.DataFrame(stock_data)
+stock_selection_df = stock_selection_df.sort_values(by='CAPM_Expected_Return', ascending=False)
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+# Streamlit UI Components
+st.title("Stock Analysis Dashboard")
+st.write("This dashboard provides an analysis of various stocks and their performance based on CAPM.")
 
-countries = gdp_df['Country Code'].unique()
+st.header("Stock Selection Data")
+st.dataframe(stock_selection_df)
 
-if not len(countries):
-    st.warning("Select at least one country")
+# Visualize Expected Returns and Average Returns
+st.header("Expected Returns vs Average Returns")
+fig = px.bar(stock_selection_df, x='Stock', y=['CAPM_Expected_Return', 'Avg_Stock_Return'], 
+              title='Expected Returns vs Average Returns', barmode='group')
+st.plotly_chart(fig)
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+# Function to normalize the prices based on the initial price
+def normalize(df):
+    normalized_df = df.copy()
+    for col in normalized_df.columns[1:]:
+        normalized_df[col] = normalized_df[col] / normalized_df[col].iloc[0]
+    return normalized_df
 
-''
-''
-''
+# Normalize stock prices
+normalized_data = normalize(data[["DATE"] + stocks])
+st.header("Normalized Stock Prices")
+fig = px.line(normalized_data, x='DATE', y=stocks, title='Normalized Stock Prices Over Time')
+st.plotly_chart(fig)
 
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
+# Create scatter plots with regression lines for each stock
+for stock in stocks:
+    st.header(f'Scatter Plot of {stock} Returns vs Market Returns')
+    fig, ax = plt.subplots()
+    plt.scatter(data['SP500_Return'], data[f'{stock}_Return'], alpha=0.5)
+    
+    # Fit regression line
+    X = sm.add_constant(data['SP500_Return'])
+    model = sm.OLS(data[f'{stock}_Return'], X).fit()
+    plt.plot(data['SP500_Return'], model.predict(X), color='red', label=f'Fit Line (Beta={model.params[1]:.2f})')
+    
+    plt.title(f'Scatter Plot of {stock} Returns vs Market Returns')
+    plt.xlabel('Market Returns (S&P 500)')
+    plt.ylabel(f'{stock} Returns')
+    plt.legend()
+    plt.grid()
+    
+    # Use Streamlit to show the matplotlib figure
+    st.pyplot(fig)
 
-st.header('GDP over time', divider='gray')
+# Portfolio Beta Calculation
+n = len(stocks)
+weights = [1/n] * n
+portfolio_beta = sum(weights[i] * beta_df['Beta'].iloc[i] for i in range(n))
+st.header(f"Portfolio Beta: {portfolio_beta}")
 
-''
+# Additional Regression Analysis (Optional)
+st.header("Regression Analysis Example")
+X = data[['SP500_Return']]
+y = data[[f'{stocks[0]}_Return']].copy()  # Use one stock return as an example
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-''
-''
+model = LinearRegression()
+model.fit(X_train, y_train)
+y_pred = model.predict(X_test)
+
+# Calculate and display the mean squared error
+mse = mean_squared_error(y_test, y_pred)
+st.write(f'Mean Squared Error: {mse:.4f}')
+
+# Plot actual vs predicted values
+fig, ax = plt.subplots()
+plt.scatter(y_test, y_pred)
+plt.plot([y.min(), y.max()], [y.min(), y.max()], '--r')  # Diagonal line
+plt.title('Actual vs Predicted Returns')
+plt.xlabel('Actual Returns')
+plt.ylabel('Predicted Returns')
+plt.grid()
+st.pyplot(fig)
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
